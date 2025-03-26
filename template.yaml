@@ -1,0 +1,593 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  IaC for multi-agent collaboration
+
+Parameters:
+  MomentoApiKey:
+    Type: String
+  MomentoCacheName:
+    Type: String
+
+Metadata:
+  esbuild-properties: &esbuild-properties
+    Format: esm
+    Minify: true
+    OutExtension:
+      - .js=.mjs
+    Target: es2020
+    Sourcemap: false
+    EntryPoints:
+      - index.mjs
+    Banner:
+      - js=import { createRequire } from 'module'; const require = createRequire(import.meta.url);
+    External:
+      - '@aws-sdk/*'
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    CodeUri: .
+    Architectures:
+      - arm64
+    Tracing: Active
+    Timeout: 15
+    MemorySize: 1024
+    Environment:
+      Variables:
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+
+Resources:
+  BudgetTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  BudgetAgentGetBudget:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - budget/get-budget.mjs
+    Properties:
+      Handler: budget/get-budget.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource: !GetAtt BudgetTable.Arn
+      Environment:
+        Variables:
+          BUDGET_TABLE: !Ref BudgetTable
+
+  GetBudgetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BudgetAgentGetBudget
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt BudgetAgent.AgentArn
+
+  BudgetAgentSaveParty:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - budget/save-party.mjs
+    Properties:
+      Handler: budget/save-party.handler
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt BudgetTable.Arn
+      Environment:
+        Variables:
+          BUDGET_TABLE: !Ref BudgetTable
+
+  SavePartyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BudgetAgentSaveParty
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt BudgetAgent.AgentArn
+
+  BudgetAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: Kevin
+      AgentResourceRoleArn: !GetAtt BudgetAgentRole.Arn
+      IdleSessionTTLInSeconds: 600
+      Instruction: |
+        You are a happy, not-so-competent and slow accountant in a small paper company. You're on the party planning committee and have been put in charge of the budget. Do your best to make sure you budget the right amount for each party, knowing your office has lots of them each year. While you might not be the best at math, you are good at one thing - asking your coworkers how much things will cost. You are forgetful sometimes, but always adamant to get your budgets and you aren't afraid to tell someone to think again and bring you a different number if it's too much. You don't really know who does what or what goes into planning a party, you just work the numbers. You mostly ask for help from others and don't drive conversations so much.
+      FoundationModel: "amazon.nova-lite-v1:0"
+      ActionGroups:
+        - ActionGroupName: GetBudget
+          Description: Get the annual budget and spend on parties so far
+          ActionGroupExecutor:
+            Lambda: !GetAtt BudgetAgentGetBudget.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: get_budget_and_all_parties_so_far
+                Description: Load the annual budget and party details from all committed parties
+        - ActionGroupName: SaveParty
+          Description: Save Party record after approval
+          ActionGroupExecutor:
+            Lambda: !GetAtt BudgetAgentSaveParty.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: save_party_to_database
+                Description: Save the party details to the database after approval
+                Parameters:
+                  partyDate:
+                    Type: string
+                    Description: The date of the party
+                    Required: true
+                  partyName:
+                    Type: string
+                    Description: The name of the party
+                    Required: true
+                  partyCost:
+                    Type: number
+                    Description: The total cost of the party
+                    Required: true
+  BudgetAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /service-role/
+      Policies:
+        - PolicyName: FunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt BudgetAgentSaveParty.Arn
+                  - !GetAtt BudgetAgentGetBudget.Arn
+        - PolicyName: BedrockStuff
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-lite-v1:0"
+
+  GraphicsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  GraphicsAgentCreateGraphic:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - graphics/create-graphic.mjs
+    Properties:
+      Handler: graphics/create-graphic.handler
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref GraphicsBucket
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-image-generator-v2:0
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:PutObjectAcl
+              Resource: !Sub '${GraphicsBucket.Arn}/*'
+
+  CreateGraphicPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GraphicsAgentCreateGraphic
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt GraphicsAgent.AgentArn
+
+  GraphicsAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: Pam
+      AgentResourceRoleArn: !GetAtt GraphicsAgentRole.Arn
+      IdleSessionTTLInSeconds: 600
+      Instruction: |
+        You are a shy buy confident secretary who is taking art classes at night. You're on an office party planning committee and are tasked with being the graphics person. Use what you know from art school to create office-friendly graphics for the super fun parties you have. You also know a thing or two about costs for printing and the materials involved. You should always include an approximate budget for distributing your designs.
+      FoundationModel: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+      ActionGroups:
+        - ActionGroupName: CreateGraphic
+          Description: Create a graphic, save it as public to S3, and get the url
+          ActionGroupExecutor:
+            Lambda: !GetAtt GraphicsAgentCreateGraphic.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: generate_graphic_with_llm
+                Description: Prompt an LLM to create a graphic and get a link to the image in return
+                Parameters:
+                  detailedImageDescription:
+                    Type: string
+                    Description: Detailed image description of what you want generated
+                    Required: true
+                  style:
+                    Type: string
+                    Description: The style of art to create the graphic in
+                    Required: true
+
+  GraphicsAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /service-role/
+      Policies:
+        - PolicyName: FunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt GraphicsAgentCreateGraphic.Arn
+        - PolicyName: BedrockStuff
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+
+  CommsAgentSendEmail:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - comms/send-email.mjs
+    Properties:
+      Handler: comms/send-email.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+
+  SendEmailPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CommsAgentSendEmail
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt CommsAgent.AgentArn
+
+  CommsAgentSendInternalMessage:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - comms/send-internal-message.mjs
+    Properties:
+      Handler: comms/send-internal-message.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Environment:
+        Variables:
+          MOMENTO_API_KEY: !Ref MomentoApiKey
+          CACHE_NAME: !Ref MomentoCacheName
+
+  SendInternalMessagePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CommsAgentSendInternalMessage
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt CommsAgent.AgentArn
+
+  CommsAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: Kelly
+      AgentResourceRoleArn: !GetAtt CommsAgentRole.Arn
+      IdleSessionTTLInSeconds: 600
+      Instruction: |
+        You are an upbeat, often too friendly communications specialist woman for office parties. You are responsible for figuring out what hip lingo to use in office communications regarding parties and you know a thing or two about how to send professional yet fun emails. You know when the appropriate time to send communications is and also are aware of how much things cost. But remember, you like to keep it light and have fun.
+      FoundationModel: "meta.llama3-70b-instruct-v1:0"
+      ActionGroups:
+        - ActionGroupName: SendEmail
+          Description: Sends an html formatted email to a provided address
+          ActionGroupExecutor:
+            Lambda: !GetAtt CommsAgentSendEmail.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: send_email
+                Description: Send an email formatted in html
+                Parameters:
+                  html:
+                    Type: string
+                    Description: The html formatted email to send
+                    Required: true
+                  subject:
+                    Type: string
+                    Description: The subject of the email
+                    Required: true
+                  to:
+                    Type: string
+                    Description: The recipient of the email
+                    Required: false
+        - ActionGroupName: SendInternalMessage
+          Description: Sends a message for free across the office network
+          ActionGroupExecutor:
+            Lambda: !GetAtt CommsAgentSendInternalMessage.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: send_internal_message
+                Description: Sends a plain-text message across the company notification system
+                Parameters:
+                  message:
+                    Type: string
+                    Description: The message to send
+                    Required: true
+
+  CommsAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /service-role/
+      Policies:
+        - PolicyName: FunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt CommsAgentSendEmail.Arn
+                  - !GetAtt CommsAgentSendInternalMessage.Arn
+        - PolicyName: BedrockStuff
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/meta.llama3-70b-instruct-v1:0"
+
+  LogisticsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  LogisticsAgentGetPrices:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - logistics/get-rental-prices.mjs
+    Properties:
+      Handler: logistics/get-rental-prices.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  GetPricesPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LogisticsAgentGetPrices
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt LogisticsAgent.AgentArn
+
+  LogisticsAgentGetInventory:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - logistics/get-inventory.mjs
+    Properties:
+      Handler: logistics/get-inventory.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt LogisticsTable.Arn
+      Environment:
+        Variables:
+          LOGISTICS_TABLE: !Ref LogisticsTable
+
+  GetInventoryPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LogisticsAgentGetInventory
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt LogisticsAgent.AgentArn
+
+  LogisticsAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: Angela
+      AgentResourceRoleArn: !GetAtt LogisticsAgentRole.Arn
+      IdleSessionTTLInSeconds: 600
+      Instruction: |
+        You are a practical, smart, albeit grumpy logistics coordinator for office parties. You are responsible for pragmatic details like acquiring the necessary things like chairs, tvs, etc... for running a party. You also are responsible for venue location and following venue rules. You find all the details to make the party tick and report back the costs you will need and make compromises only when necessary.
+      FoundationModel: "anthropic.claude-3-sonnet-20240229-v1:0"
+      ActionGroups:
+        - ActionGroupName: GetInventory
+          Description: Get the list of inventory available for free
+          ActionGroupExecutor:
+            Lambda: !GetAtt LogisticsAgentGetInventory.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: get_available_inventory
+                Description: Get a list of available inventory for use for free
+        - ActionGroupName: GetRentalPrices
+          Description: View the cost of items available for rent
+          ActionGroupExecutor:
+            Lambda: !GetAtt LogisticsAgentGetPrices.Arn
+          ActionGroupState: ENABLED
+          FunctionSchema:
+            Functions:
+              - Name: get_rental_prices
+                Description: Gets a list of items available for rent and their daily rental prices
+
+  LogisticsAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /service-role/
+      Policies:
+        - PolicyName: FunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt LogisticsAgentGetInventory.Arn
+                  - !GetAtt LogisticsAgentGetPrices.Arn
+        - PolicyName: BedrockStuff
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0"
+
+  SeedDataFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        <<: *esbuild-properties
+        EntryPoints:
+          - seed/seed-data.mjs
+    Properties:
+      Handler: seed/seed-data.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource:
+                - !GetAtt BudgetTable.Arn
+                - !GetAtt LogisticsTable.Arn
+      Environment:
+        Variables:
+          BUDGET_TABLE: !Ref BudgetTable
+          LOGISTICS_TABLE: !Ref LogisticsTable
+      Events:
+        Deploy:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: default
+            Pattern:
+              source:
+                - aws.cloudformation
+              detail:
+                stack-id:
+                  - !Ref AWS::StackId
+                status-details:
+                  status:
+                    - CREATE_COMPLETE
+                    - UPDATE_COMPLETE

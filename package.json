@@ -1,0 +1,21 @@
+{
+  "name": "agent-party-planning",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.774.0",
+    "@aws-sdk/client-dynamodb": "^3.775.0",
+    "@aws-sdk/client-eventbridge": "^3.774.0",
+    "@aws-sdk/client-s3": "^3.774.0",
+    "@aws-sdk/util-dynamodb": "^3.775.0"
+  },
+  "dependencies": {
+    "@gomomento/sdk": "^1.108.0"
+  }
+}
