@@ -1,19 +1,14 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
-import { buildResponse } from '../utils/helpers.mjs';
+import { buildResponse, getParams } from '../utils/helpers.mjs';
 
 const s3Client = new S3Client();
 const bedrock = new BedrockRuntimeClient();
 
 export const handler = async (event) => {
   try {
-    const { detailedImageDescription, style } = event;
-
-    const prompt = `
-    Create a graphic for a flyer that captures the essence of ${detailedImageDescription} in a ${style} style.
-    The graphic should be a single image that is easy to understand and visually appealing with minimal to no text on it.
-    Make sure it's appropriate for use in an office setting.
-  `;
+    const { detailedImageDescription, style } = getParams(event, ['detailedImageDescription', 'style']);
+    const prompt = `A promo graphic with a ${style} style for a party. Should be "${detailedImageDescription}". Do not include words on the image.`;
 
     const command = new InvokeModelCommand({
       modelId: 'amazon.titan-image-generator-v2:0',

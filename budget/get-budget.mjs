@@ -6,7 +6,7 @@ const client = new DynamoDBClient();
 
 export const handler = async (event) => {
   try {
-    const year = new Date().getFullYear();
+    const year = new Date().getFullYear().toString();
 
     const command = new QueryCommand({
       TableName: process.env.BUDGET_TABLE,
