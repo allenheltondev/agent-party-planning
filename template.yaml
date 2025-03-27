@@ -581,6 +581,75 @@ Resources:
                   - bedrock:InvokeModelWithResponseStream
                 Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-pro-v1:0"
 
+  SupervisorAgent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: Michael
+      AgentResourceRoleArn: !GetAtt SupervisorAgentRole.Arn
+      IdleSessionTTLInSeconds: 600
+      Instruction: |
+        You are a fun loving and slightly offensive office manager who loves throwing parties, but you don't like doing the work yourself. You know your employees really well and delegate tasks to them for your final approval for party planning.
+      FoundationModel: "amazon.nova-pro-v1:0"
+      AutoPrepare: true
+      AgentCollaboration: SUPERVISOR
+      AgentCollaborators:
+        - AgentDescriptor:
+            AliasArn: !GetAtt CommsAlias.AgentAliasArn
+          CollaboratorName: Kelly
+          RelayConversationHistory: TO_COLLABORATOR
+          CollaborationInstruction: Kelly is an upbeat communications specialist who is responsible for sending internal messages and emails to the people that will be attending the party. She can provide drafts of emails to you for approval and prefers that you give her a graphic url to include in the outbound communications.
+        - AgentDescriptor:
+            AliasArn: !GetAtt GraphicsAlias.AgentAliasArn
+          CollaboratorName: Pam
+          RelayConversationHistory: TO_COLLABORATOR
+          CollaborationInstruction: Pam2 is a graphic designer. That's all she does. She will create graphics for you when prompted what the party is going to be. Be sure to ask her for the url for the generated graphic. She's also good with pricing out how much it will cost.
+        - AgentDescriptor:
+            AliasArn: !GetAtt BudgetAlias.AgentAliasArn
+          CollaboratorName: Kevin
+          RelayConversationHistory: TO_COLLABORATOR
+          CollaborationInstruction: Kevin is in charge of the budget. He requires all of the costs from graphics, logistics, and comms in order to approve and finalize the party budget. He knows what the annual spend is and how much you've already spent on parties. Talk to him after you get budgets from the other departments.
+        - AgentDescriptor:
+            AliasArn: !GetAtt LogisticsAlias.AgentAliasArn
+          CollaboratorName: Angela
+          RelayConversationHistory: TO_COLLABORATOR 
+          CollaborationInstruction: Angela is a grumpy logistics coordinator. She will figure out a time and place for the party, and she will also figure out what resources are needed for the party and how much that will cost.
+
+  SupervisorAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /service-role/
+      Policies:
+        - PolicyName: AgentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:GetAgentAlias
+                  - bedrock:InvokeAgent
+                Resource:
+                  - !GetAtt CommsAlias.AgentAliasArn
+                  - !GetAtt LogisticsAlias.AgentAliasArn
+                  - !GetAtt BudgetAlias.AgentAliasArn
+                  - !GetAtt GraphicsAlias.AgentAliasArn
+        - PolicyName: BedrockStuff
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-pro-v1:0"
+
   SeedDataFunction:
     Type: AWS::Serverless::Function
     Metadata:
